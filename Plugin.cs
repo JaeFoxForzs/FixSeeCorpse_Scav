@@ -12,7 +12,7 @@ namespace FixSeeCorpse
     {
         public const string Guid = "com.user.FixSeeCorpse";
         public const string Name = "FixSeeCorpse";
-        public const string Version = "1.1.0";
+        public const string Version = "1.8.3";
 
         internal static BepInEx.Logging.ManualLogSource Log;
         private Harmony _harmony;

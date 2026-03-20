@@ -13,6 +13,14 @@ namespace FixSeeCorpse.Helpers
         private const float DarknessThreshold = 0.05f;
         private const float SearchRadius = 50f;
         
+        // --- Настройки механики SeeTicks ---
+        private const float MinNeedSeeTicks = 0.15f; 
+        private const float MaxNeedSeeTicks = 1.5f;  
+        
+        private const float MinNoticeDistance = 10f;  
+        private const float MaxNoticeDistance = 45f; 
+        // -----------------------------------------
+
         private static readonly Vector2 CorpseOffset = new Vector2(0f, 1f);
 
         private static Limb cachedHeadLimb;
@@ -24,6 +32,19 @@ namespace FixSeeCorpse.Helpers
         private static Dictionary<Vector2Int, BrightnessData> _brightnessCache = new Dictionary<Vector2Int, BrightnessData>();
         private static MonoBehaviour _coroutineRunner;
         private const float BrightnessCacheLifetime = 0.2f;
+
+        private static Texture2D _reusablePixelTexture;
+
+        // Состояние обзора трупов для каждого игрока
+        private class ViewState
+        {
+            public float SeeTicks;
+            public float LastTickTime;
+            public bool IsSpottedCached; // Кэшируем результат, чтобы не спамить в одном кадре
+        }
+        
+        private static Dictionary<int, ViewState> _corpseViewStates = new Dictionary<int, ViewState>();
+        private static float _lastCleanupTime;
 
         private struct BrightnessData
         {
@@ -45,36 +66,36 @@ namespace FixSeeCorpse.Helpers
 
             EnsureBrightnessUpdate(__instance, corpsePos);
 
-            bool canSeeCorpse = CanPlayerSeeCorpse(player, corpsePos);
+            bool isSpotted = CheckAndProcessCorpseView(player, __instance, corpsePos);
 
-            if (!__instance.animalCorpse && !___didComment && canSeeCorpse)
+            if (isSpotted)
             {
-                ___didComment = true;
-
-                __instance.GetComponent<BuildingEntity>().fullName = Locale.GetBuilding("corpseseen");
-
-                player.happiness -= 3.5f * player.desensitizedMult;
-                player.sicknessAmount += 6f * player.desensitizedMult;
-                player.desensitizedMult *= 0.9f;
-                player.corpsesSeen++;
-
-                if (player.totalHappiness < -55f)
+                if (!__instance.animalCorpse && !___didComment)
                 {
-                    player.talker.Talk(Locale.GetCharacter("seecorpsesuicidal"), null, true, false);
-                }
-                else if (player.corpsesSeen < 9)
-                {
-                    player.talker.Talk(Locale.GetCharacter("seecorpse"), null, false, false);
-                    player.eyeScareTime = 4f;
-                }
-                else
-                {
-                    player.talker.Talk(Locale.GetCharacter("seecorpsedesensitized"), null, false, false);
-                }
-            }
+                    ___didComment = true;
 
-            if (canSeeCorpse)
-            {
+                    __instance.GetComponent<BuildingEntity>().fullName = Locale.GetBuilding("corpseseen");
+
+                    player.happiness -= 3.5f * player.desensitizedMult;
+                    player.sicknessAmount += 6f * player.desensitizedMult;
+                    player.desensitizedMult *= 0.9f;
+                    player.corpsesSeen++;
+
+                    if (player.totalHappiness < -55f)
+                    {
+                        player.talker.Talk(Locale.GetCharacter("seecorpsesuicidal"), null, true, false);
+                    }
+                    else if (player.corpsesSeen < 9)
+                    {
+                        player.talker.Talk(Locale.GetCharacter("seecorpse"), null, false, false);
+                        player.eyeScareTime = 4f;
+                    }
+                    else
+                    {
+                        player.talker.Talk(Locale.GetCharacter("seecorpsedesensitized"), null, false, false);
+                    }
+                }
+
                 player.overrideLookTime = 0.5f;
                 player.overrideLookPos = corpsePos;
 
@@ -138,9 +159,9 @@ namespace FixSeeCorpse.Helpers
 
                 Body player = netBody.body;
                 
-                bool canSeeCorpse = CanPlayerSeeCorpse(player, corpsePos);
+                bool isSpotted = CheckAndProcessCorpseView(player, __instance, corpsePos);
 
-                if (canSeeCorpse)
+                if (isSpotted)
                 {
                     peopleSeenIt.Add(netBody);
 
@@ -180,9 +201,9 @@ namespace FixSeeCorpse.Helpers
             {
                 Body player = netBody.body;
                 
-                bool canSeeCorpse = CanPlayerSeeCorpse(player, corpsePos);
+                bool isSpotted = CheckAndProcessCorpseView(player, __instance, corpsePos);
 
-                if (canSeeCorpse)
+                if (isSpotted)
                 {
                     player.overrideLookTime = 0.5f;
                     player.overrideLookPos = corpsePos;
@@ -199,23 +220,132 @@ namespace FixSeeCorpse.Helpers
         
         #endregion
 
+        #region SeeTicks Logic
+
+        private static int GetViewKey(Body player, MonoBehaviour corpse)
+        {
+            unchecked
+            {
+                int hash = 17;
+                hash = hash * 31 + player.GetInstanceID();
+                hash = hash * 31 + corpse.GetInstanceID();
+                return hash;
+            }
+        }
+
+        private static bool CheckAndProcessCorpseView(Body player, MonoBehaviour corpse, Vector2 corpsePos)
+        {
+            CleanupOldViewStates();
+
+            int viewKey = GetViewKey(player, corpse);
+            
+            if (!_corpseViewStates.TryGetValue(viewKey, out ViewState state))
+            {
+                state = new ViewState();
+                state.LastTickTime = Time.time - 0.01f; // Смещение для первого кадра
+                _corpseViewStates[viewKey] = state;
+            }
+
+            float timeSinceLastTick = Time.time - state.LastTickTime;
+
+            // Если функция вызывается мультиплеерным модом несколько раз 
+            // в один и тот же кадр, просто отдаем результат и не трогаем таймер!
+            if (timeSinceLastTick == 0f)
+            {
+                return state.IsSpottedCached;
+            }
+
+            if (timeSinceLastTick > 0.5f)
+            {
+                state.SeeTicks = 0f;
+            }
+
+            bool canSeeCorpse = CanPlayerSeeCorpse(player, corpsePos);
+
+            if (canSeeCorpse)
+            {
+                float distance = Vector2.Distance(player.transform.position, corpsePos);
+                float distanceFactor = Mathf.InverseLerp(MinNoticeDistance, MaxNoticeDistance, distance);
+                float ConsciousnessFactor = Mathf.Lerp(3.5f, 0f, player.consciousness / 100f);
+                float needSeeTicks = Mathf.Lerp(MinNeedSeeTicks, MaxNeedSeeTicks, distanceFactor) + ConsciousnessFactor;
+
+                if (timeSinceLastTick < 0.5f)
+                {
+                    state.SeeTicks += timeSinceLastTick;
+                }
+                
+                state.LastTickTime = Time.time;
+
+
+
+                if (state.SeeTicks >= needSeeTicks)
+                {
+                    state.IsSpottedCached = true;
+                    return true;
+                }
+            }
+            else
+            {
+                state.SeeTicks = 0f;
+                state.LastTickTime = Time.time;
+            }
+
+            state.IsSpottedCached = false;
+            return false;
+        }
+
+        private static void CleanupOldViewStates()
+        {
+            if (Time.time - _lastCleanupTime > 10f)
+            {
+                _lastCleanupTime = Time.time;
+                List<int> keysToRemove = new List<int>();
+                
+                foreach (var kvp in _corpseViewStates)
+                {
+                    if (Time.time - kvp.Value.LastTickTime > 10f)
+                    {
+                        keysToRemove.Add(kvp.Key);
+                    }
+                }
+                
+                foreach (int key in keysToRemove)
+                {
+                    _corpseViewStates.Remove(key);
+                }
+            }
+        }
+
+        #endregion
+
         #region Shared Helper Methods
 
         private static bool CanPlayerSeeCorpse(Body player, Vector2 corpsePos)
         {
-            if (!IsInCameraView(corpsePos))
-                return false;
-            
+            // Проверяем, локальный ли это игрок (т.е. тот, кто играет за этим компьютером)
+            bool isLocalPlayer = (PlayerCamera.main != null && player == PlayerCamera.main.body);
+
+            // 1. Математика: Угол обзора (работает для всех, независимо от монитора)
             if (!IsPlayerLookingAt(player, corpsePos))
                 return false;
             
+            // 2. Физика: Линия видимости через Raycast (работает для всех)
             Vector2 playerEyePos = GetPlayerEyePosition(player);
             Vector2 corpseTargetPos = corpsePos + CorpseOffset;
             if (!HasLineOfSight(playerEyePos, corpseTargetPos))
                 return false;
             
-            if (!IsIlluminatedCached(corpseTargetPos))
-                return false;
+            // ИСПРАВЛЕНИЕ: Проверяем освещение экрана и рамки камеры ТОЛЬКО для локального игрока.
+            // Для игроков по сети мы не знаем, что у них рендерится на экране, поэтому считаем, 
+            // что если они смотрят на труп и нет стен - они его видят.
+            if (isLocalPlayer)
+            {
+                if (!IsInCameraView(corpsePos))
+                    return false;
+                
+                if (!IsIlluminatedCached(corpseTargetPos))
+                    return false;
+            }
 
             return true;
         }
@@ -244,6 +374,7 @@ namespace FixSeeCorpse.Helpers
             
             return (Vector2)player.transform.position + new Vector2(0f, 2.5f);
         }
+
         private static bool IsInCameraView(Vector2 worldPos)
         {
             Camera cam = Camera.main;
@@ -273,14 +404,14 @@ namespace FixSeeCorpse.Helpers
         {
             Vector2 playerPos = player.transform.position;
             Vector2 targetPos = player.targetLookPos;
-            Vector2 direction = (targetPos - playerPos).normalized;
+            Vector2 direction = targetPos - playerPos;
 
             if (direction.sqrMagnitude < 0.001f)
             {
                 return player.isRight ? Vector2.right : Vector2.left;
             }
 
-            return direction;
+            return direction.normalized;
         }
 
         private static bool HasLineOfSight(Vector2 from, Vector2 to)
@@ -339,12 +470,15 @@ namespace FixSeeCorpse.Helpers
             {
                 try
                 {
-                    Texture2D tex = new Texture2D(1, 1, TextureFormat.RGB24, false);
-                    tex.ReadPixels(new Rect(screenPos.x, screenPos.y, 1, 1), 0, 0, false);
-                    tex.Apply();
+                    if (_reusablePixelTexture == null)
+                    {
+                        _reusablePixelTexture = new Texture2D(1, 1, TextureFormat.RGB24, false);
+                    }
+
+                    _reusablePixelTexture.ReadPixels(new Rect(screenPos.x, screenPos.y, 1, 1), 0, 0, false);
+                    _reusablePixelTexture.Apply();
                     
-                    Color pixel = tex.GetPixel(0, 0);
-                    Object.Destroy(tex);
+                    Color pixel = _reusablePixelTexture.GetPixel(0, 0);
                     
                     brightness = (pixel.r + pixel.g + pixel.b) / 3f;
                 }
