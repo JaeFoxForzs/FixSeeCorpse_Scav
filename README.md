@@ -2,15 +2,7 @@
 
 Overview
 
-This mod completely reworks how characters notice corpses. Instead of the original instant detection when a corpse is rendered on screen, players now need to actually see the corpse under realistic conditions.
-Features
-
-Gradual Detection
-
-    Corpses must be looked at for a period of time before being noticed
-    Close corpses (≤10m) are spotted quickly (~0.15s)
-    Distant corpses (≥45m) take longer to notice (~1.5s)
-    Low consciousness adds up to +3.5s detection delay
+This mod completely reworks corpse detection mechanics. Instead of vanilla instant detection within a 7-tile radius (ignoring walls and lighting), players must now actually see the corpse
 
 Realistic Visibility Checks
 
@@ -18,6 +10,13 @@ Realistic Visibility Checks
     Line of sight check (corpses behind walls are not detected)
     Camera bounds check (corpse must be on screen)
     Lighting check (corpses in complete darkness are not noticed)
+    
+Gradual Detection
+
+    Corpses must be looked at for a period of time before being noticed
+    Close corpses (≤10m) are spotted quickly (~0.15s)
+    Distant corpses (≥45m) take longer to notice (~1.5s)
+    Low consciousness adds up to +3.5s detection delay
 
 Multiplayer Support
 
